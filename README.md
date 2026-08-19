@@ -67,7 +67,7 @@ Window and tab titles follow Live's UI language, so relying on them would break 
 the interface is in another language. The audio page is found by **structure** — it is
 the only settings page holding three pop-up buttons (driver type, input device, output
 device) — and the output is the third from the top. The device names themselves come from
-CoreAudio, and are matched as a substring, case-sensitively.
+CoreAudio, and are matched as a substring, case-insensitively (AppleScript's `contains`).
 
 ## Exit codes
 
