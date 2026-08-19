@@ -42,10 +42,15 @@ fi
 
 WANT="${1:-}"
 
-# Le message d'osascript porte le verdict ; on le traduit en code de sortie pour que
-# l'appelant (le remède du dashboard, un script de mise en scène) puisse en tenir compte
-# sans avoir à relire du texte français.
-OUT="$(osascript - "$WANT" <<'AS'
+# Le résultat passe par un fichier temporaire, et NON par $(osascript <<'AS' ... ). Bash
+# 3.2 — celui de /bin/bash, donc celui qu'obtient launchd — refuse un heredoc à
+# l'intérieur d'une substitution de commande : « unexpected EOF while looking for
+# matching ' ». Homebrew installe bash 5, qui l'accepte : le script marchait donc au
+# terminal et échouait une fois appelé par le service. Mesuré le 2026-08-19.
+TMP="$(mktemp -t live-output)"
+trap 'rm -f "$TMP"' EXIT
+
+osascript - "$WANT" >"$TMP" 2>&1 <<'AS'
 on run argv
   set want to ""
   if (count of argv) > 0 then set want to item 1 of argv
@@ -96,8 +101,15 @@ on run argv
     end if
 
     click outPop
-    delay 0.8
+    delay 1.0
     set items_ to my dropdownItems()
+    if items_ is missing value then
+      -- Une seconde chance : la liste que Live dessine met parfois plus d'un instant à
+      -- exister dans l'arbre d'accessibilité. Conclure « illisible » sur une lenteur
+      -- d'affichage produirait un échec qui se contredit au coup suivant.
+      delay 1.2
+      set items_ to my dropdownItems()
+    end if
     if items_ is missing value then
       key code 53
       if opened then my closePrefs()
@@ -228,8 +240,8 @@ on closePrefs()
   end tell
 end closePrefs
 AS
-)"
 RC=$?
+OUT="$(cat "$TMP")"
 [ -n "$OUT" ] && echo "$OUT"
 case "$OUT" in
   ERREUR:*)      exit 3 ;;
