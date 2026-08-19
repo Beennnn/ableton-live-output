@@ -1,6 +1,6 @@
 # ableton-live-output
 
-**Set Ableton Live's audio output device from the command line, on macOS — in the
+**Switch Ableton Live's audio output device from the command line, on macOS — in the
 running app, without quitting or restarting it.**
 
 ```bash
@@ -12,29 +12,41 @@ live-output "P-Series"       # switch to the first output whose name contains th
 ```
 $ live-output --list
 No Device
-Utiliser interface du système
+Use System Interface
 Background Music (2 In, 2 Out)
-Haut-parleurs MacBook Pro (0 In, 2 Out)
+MacBook Pro Speakers (0 In, 2 Out)
 ✔ P-Series (2 In, 2 Out)
 
 $ live-output MacBook
-OK: Haut-parleurs MacBook Pro (0 In, 2 Out)
+OK: MacBook Pro Speakers (0 In, 2 Out)
 ```
 
-## Why this exists
+## The problem
 
-There is no supported way to do this. Live has **no AppleScript dictionary**, its
-`Preferences.cfg` stores the device in a **binary blob** (UTF-16 keys, no readable device
-name) that Live rewrites when it quits — so editing it under a running Live achieves
-nothing — and Live's Python API (control surfaces) doesn't reach the audio hardware.
+In Live, changing the audio output is a **manual trip through a dialog**: Settings →
+Audio → Audio Output Device, pick from the menu, close. Every time. There is no shortcut
+to bind, no MIDI mapping, no menu item, nothing to click on the way past.
+
+That is an annoyance at a desk. It is a different thing entirely on stage, where the
+output changes between soundcheck and set, where a laptop that woke up on the wrong
+device produces silence at the first note, and where nobody is going to open a settings
+dialog in front of an audience. It cannot be scripted into a bring-up routine, cannot be
+folded into a "get the rig ready" button, cannot be checked and repaired automatically —
+**unless something drives that dialog for you. That is what this is.**
+
+Worth knowing before you reach for something cleaner: there is nothing cleaner.
+
+| Route | Why it doesn't work |
+|---|---|
+| AppleScript | Live ships **no scripting dictionary** — no `.sdef` in the bundle |
+| `Preferences.cfg` | Binary, UTF-16 keys, and **the device name is not in it in readable form**. Live also rewrites the file when it quits, so editing it under a running Live changes nothing |
+| Live's Python API | Control-surface scripts reach tracks, clips and devices — **not the audio hardware** |
+| Max for Live | Same limit: it lives inside the audio engine, it does not choose it |
 
 What is left is the accessibility layer, and Live 12 exposes it properly: the settings
-window publishes its pop-up buttons, and the device list is enumerable. This script drives
-that, and verifies the value actually changed before reporting success.
-
-The use case it was written for: a laptop rig where the audio interface changes between
-the desk and the stage, and where discovering at the first note that Live is still on
-`No Device` is not an option.
+window publishes its pop-up buttons and the device list is enumerable. This script drives
+that, then **reads the value back** to confirm the change actually took before reporting
+success.
 
 ## Install
 
@@ -43,16 +55,19 @@ git clone https://github.com/Beennnn/ableton-live-output.git
 cd ableton-live-output && ./install.sh      # symlinks into ~/.local/bin
 ```
 
-Then allow the terminal (or whatever calls it) in **System Settings → Privacy & Security
-→ Accessibility**. Without that, macOS blocks the UI queries and the script reports that
-it cannot see Live.
+Then allow whatever **calls** the script in **System Settings → Privacy & Security →
+Accessibility**. That permission is granted per calling process, and it does not carry
+over: a terminal you authorised does nothing for a background service that runs the same
+script. When it is missing you get exit code 4 and a line telling you so, rather than an
+AppleScript error number.
 
-## What it does not read
+## It does not read a single translated string
 
-It never touches Live's language: window and tab titles follow the UI language, so relying
-on them would break the day the interface is translated. The audio page is found by
-**structure** — it is the only settings page holding three pop-up buttons (driver type,
-input device, output device) — and the output is the third from the top.
+Window and tab titles follow Live's UI language, so relying on them would break the day
+the interface is in another language. The audio page is found by **structure** — it is
+the only settings page holding three pop-up buttons (driver type, input device, output
+device) — and the output is the third from the top. The device names themselves come from
+CoreAudio, and are matched as a substring, case-sensitively.
 
 ## Exit codes
 
@@ -62,8 +77,22 @@ input device, output device) — and the output is the third from the top.
 | 1 | bad usage, or Live is not running |
 | 2 | no output matches the pattern |
 | 3 | the change did not take |
+| 4 | the caller lacks Accessibility permission |
 
-Machine-readable on purpose: the caller should not have to parse a French sentence.
+Machine-readable on purpose: a caller should never have to parse a sentence.
+
+## Two traps this already walks around
+
+**Waiting for a delay instead of for the thing.** Opening the settings window takes up to
+three seconds; a fixed pause is wrong both ways — too short and the first call fails, too
+long and every call drags. The script polls until the element exists. The symptom before
+that fix was distinctive: the first call failed, the next two worked, because they found
+the window already open.
+
+**A here-document inside `$( )`.** Bash 3.2 — the `/bin/bash` that macOS ships, and the
+one a launchd service gets — rejects it: *unexpected EOF while looking for matching `'`*.
+Homebrew's bash 5 accepts it. So the script ran fine from a terminal and failed only when
+called by a service. It now writes through a temporary file instead.
 
 ## Tested on
 

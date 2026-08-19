@@ -25,7 +25,8 @@
 # Prérequis : Live lancé, et l'app qui lance ce script autorisée dans
 # Réglages Système → Confidentialité et sécurité → Accessibilité.
 #
-# Codes de sortie : 0 = fait · 1 = usage/Live absent · 2 = motif introuvable · 3 = échec.
+# Codes de sortie : 0 = fait · 1 = usage/Live absent · 2 = motif introuvable ·
+#                   3 = le changement n'a pas pris · 4 = accessibilité refusée à l'appelant.
 
 set -uo pipefail
 
@@ -42,10 +43,15 @@ fi
 
 WANT="${1:-}"
 
-# Le message d'osascript porte le verdict ; on le traduit en code de sortie pour que
-# l'appelant (le remède du dashboard, un script de mise en scène) puisse en tenir compte
-# sans avoir à relire du texte français.
-OUT="$(osascript - "$WANT" <<'AS'
+# Le résultat passe par un fichier temporaire, et NON par $(osascript <<'AS' ... ). Bash
+# 3.2 — celui de /bin/bash, donc celui qu'obtient launchd — refuse un heredoc à
+# l'intérieur d'une substitution de commande : « unexpected EOF while looking for
+# matching ' ». Homebrew installe bash 5, qui l'accepte : le script marchait donc au
+# terminal et échouait une fois appelé par le service. Mesuré le 2026-08-19.
+TMP="$(mktemp -t live-output)"
+trap 'rm -f "$TMP"' EXIT
+
+osascript - "$WANT" >"$TMP" 2>&1 <<'AS'
 on run argv
   set want to ""
   if (count of argv) > 0 then set want to item 1 of argv
@@ -63,8 +69,16 @@ on run argv
     if audio is missing value then
       keystroke "," using command down
       set opened to true
-      delay 1.2
-      set audio to my findAudioPane()
+      -- ATTENDRE QUE ÇA EXISTE, pas attendre un délai. C'est l'ouverture de la fenêtre qui
+      -- est lente (jusqu'à 3 s observées), et une temporisation fixe est perdante des deux
+      -- côtés : trop courte le premier appel échoue, trop longue chaque appel traîne. Le
+      -- symptôme exact, mesuré le 2026-08-19 : le premier appel échouait, les deux suivants
+      -- passaient — parce qu'ils trouvaient la fenêtre déjà ouverte.
+      repeat 15 times
+        delay 0.3
+        set audio to my findAudioPane()
+        if audio is not missing value then exit repeat
+      end repeat
     end if
 
     -- Toujours rien : la page affichée n'est pas Audio. On parcourt le sélecteur de pages
@@ -95,9 +109,22 @@ on run argv
       return v
     end if
 
+    -- Table rase avant de cliquer : si un menu déroulant traîne ouvert (essai précédent
+    -- interrompu), le clic le REFERME au lieu de l'ouvrir, et la liste paraît illisible
+    -- un coup sur deux. Symptôme observé le 2026-08-19, et parfaitement reproductible :
+    -- un échec en engendrait un autre.
+    if my dropdownItems() is not missing value then
+      key code 53
+      delay 0.4
+    end if
+
     click outPop
-    delay 0.8
-    set items_ to my dropdownItems()
+    set items_ to missing value
+    repeat 12 times
+      delay 0.25
+      set items_ to my dropdownItems()
+      if items_ is not missing value then exit repeat
+    end repeat
     if items_ is missing value then
       key code 53
       if opened then my closePrefs()
@@ -228,10 +255,18 @@ on closePrefs()
   end tell
 end closePrefs
 AS
-)"
 RC=$?
+OUT="$(cat "$TMP")"
 [ -n "$OUT" ] && echo "$OUT"
 case "$OUT" in
+  # -25211 = « osascript n'est pas autorisé à un accès d'aide ». C'est l'erreur qu'on
+  # obtient quand le processus APPELANT n'a pas l'autorisation d'accessibilité — et elle
+  # se donne par appelant, pas une fois pour toutes : un terminal autorisé ne fait rien
+  # pour un service lancé par launchd, qui est un autre processus responsable. Le message
+  # brut d'AppleScript ne dit rien de tout ça, d'où cette traduction.
+  *-25211*|*"accès d’aide"*|*"assistive access"*)
+    echo "→ autoriser l'appelant dans Réglages Système › Confidentialité et sécurité › Accessibilité." >&2
+    exit 4 ;;
   ERREUR:*)      exit 3 ;;
   INTROUVABLE:*) exit 2 ;;
 esac
