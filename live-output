@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# live-output — lit et règle le périphérique de SORTIE audio d'Ableton Live,
+# dans l'application DÉJÀ OUVERTE, sans la fermer ni la relancer.
+#
+# POURQUOI PASSER PAR L'INTERFACE. Il n'y a pas d'autre porte :
+#   • Live n'expose aucun dictionnaire AppleScript (pas de .sdef dans le bundle) ;
+#   • le périphérique n'est PAS écrit en clair dans Preferences.cfg — clés en UTF-16,
+#     valeurs binaires — et Live réécrit ce fichier en quittant, donc l'éditer sous ses
+#     pieds ne servirait de toute façon à rien ;
+#   • son API Python (control surfaces) ne touche pas au matériel audio.
+# Reste l'accessibilité, et Live 12 la publie correctement : la fenêtre de réglages
+# expose ses menus déroulants, et la liste des périphériques est énumérable.
+#
+# CE SCRIPT NE LIT AUCUN LIBELLÉ TRADUIT. Les titres de fenêtre et d'onglet suivent la
+# langue de Live ; s'y fier casserait le jour où l'interface change de langue. On repère
+# donc la page Audio par sa STRUCTURE : c'est la seule qui contient au moins trois menus
+# déroulants (type de pilote, entrée, sortie). Le 3e de haut en bas est la sortie.
+#
+# Usage :
+#   live-output                  l'état actuel
+#   live-output --list           les sorties que Live propose
+#   live-output <motif>          choisit la première sortie dont le nom contient <motif>
+#                                (insensible à la casse) — ex. : live-output P-Series
+#
+# Prérequis : Live lancé, et l'app qui lance ce script autorisée dans
+# Réglages Système → Confidentialité et sécurité → Accessibilité.
+#
+# Codes de sortie : 0 = fait · 1 = usage/Live absent · 2 = motif introuvable · 3 = échec.
+
+set -uo pipefail
+
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+if ! pgrep -f "Ableton Live.*/MacOS/Live" >/dev/null 2>&1; then
+  echo "Live n'est pas lancé — ce script agit sur l'application ouverte." >&2
+  exit 1
+fi
+
+WANT="${1:-}"
+
+# Le message d'osascript porte le verdict ; on le traduit en code de sortie pour que
+# l'appelant (le remède du dashboard, un script de mise en scène) puisse en tenir compte
+# sans avoir à relire du texte français.
+OUT="$(osascript - "$WANT" <<'AS'
+on run argv
+  set want to ""
+  if (count of argv) > 0 then set want to item 1 of argv
+  set AppleScript's text item delimiters to linefeed
+
+  tell application "System Events" to tell process "Live"
+    set frontmost to true
+    delay 0.4
+
+    -- On cherche d'abord SANS rien ouvrir : la fenêtre de réglages peut déjà être là, et
+    -- dans ce cas on la laissera ouverte en partant — l'état de l'écran n'appartient pas
+    -- à ce script.
+    set audio to my findAudioPane()
+    set opened to false
+    if audio is missing value then
+      keystroke "," using command down
+      set opened to true
+      delay 1.2
+      set audio to my findAudioPane()
+    end if
+
+    -- Toujours rien : la page affichée n'est pas Audio. On parcourt le sélecteur de pages
+    -- jusqu'à tomber sur celle qui a ses trois menus déroulants.
+    if audio is missing value then
+      set sel to my findSelector()
+      if sel is not missing value then
+        repeat with rb in radio buttons of sel
+          click rb
+          delay 0.5
+          set audio to my findAudioPane()
+          if audio is not missing value then exit repeat
+        end repeat
+      end if
+    end if
+    if audio is missing value then
+      return "ERREUR: page Audio introuvable dans les réglages de Live"
+    end if
+
+    -- Trois déroulants, de haut en bas : pilote, entrée, SORTIE.
+    set pops to (UI elements of audio whose role is "AXPopUpButton")
+    if (count of pops) < 3 then return "ERREUR: réglages audio inattendus (" & (count of pops) & " menus)"
+    set outPop to my nthFromTop(pops, 3)
+
+    if want is "" then
+      set v to value of outPop as text
+      if opened then my closePrefs()
+      return v
+    end if
+
+    click outPop
+    delay 0.8
+    set items_ to my dropdownItems()
+    if items_ is missing value then
+      key code 53
+      if opened then my closePrefs()
+      return "ERREUR: liste des périphériques illisible"
+    end if
+
+    if want is "--list" then
+      set names to {}
+      repeat with mi in items_
+        set end of names to (title of mi)
+      end repeat
+      key code 53
+      if opened then my closePrefs()
+      return (names as text)
+    end if
+
+    set hit to missing value
+    repeat with mi in items_
+      if (title of mi) contains want then
+        set hit to mi
+        exit repeat
+      end if
+    end repeat
+    if hit is missing value then
+      key code 53
+      if opened then my closePrefs()
+      return "INTROUVABLE: aucune sortie ne contient « " & want & " »"
+    end if
+
+    click hit
+    delay 1.2
+    set v to value of outPop as text
+    if opened then my closePrefs()
+    if v contains want then
+      return "OK: " & v
+    else
+      return "ERREUR: la sortie est restée « " & v & " »"
+    end if
+  end tell
+end run
+
+-- La page Audio = le premier groupe contenant au moins 3 menus déroulants.
+on findAudioPane()
+  tell application "System Events" to tell process "Live"
+    repeat with w in windows
+      try
+        repeat with g in (UI elements of w whose role is "AXGroup")
+          repeat with sub in (UI elements of g whose role is "AXGroup")
+            if (count of (UI elements of sub whose role is "AXPopUpButton")) ≥ 3 then return sub
+          end repeat
+        end repeat
+      end try
+    end repeat
+  end tell
+  return missing value
+end findAudioPane
+
+on findSelector()
+  tell application "System Events" to tell process "Live"
+    repeat with w in windows
+      try
+        repeat with g in (UI elements of w whose role is "AXGroup")
+          repeat with rg in (UI elements of g whose role is "AXRadioGroup")
+            return rg
+          end repeat
+        end repeat
+      end try
+    end repeat
+  end tell
+  return missing value
+end findSelector
+
+-- Live dessine ses menus lui-même : ils apparaissent dans une fenêtre sans nom
+-- (sous-rôle AXUnknown), dont les entrées restent des AXMenuItem lisibles.
+on dropdownItems()
+  tell application "System Events" to tell process "Live"
+    try
+      set w to first window whose subrole is "AXUnknown"
+      set g to item 1 of UI elements of (item 1 of UI elements of w)
+      return (UI elements of g whose role is "AXMenuItem")
+    end try
+  end tell
+  return missing value
+end dropdownItems
+
+on nthFromTop(elems, n)
+  -- Trie par ordonnée : l'ordre de l'arbre d'accessibilité ne suit pas forcément l'ordre
+  -- visuel, et c'est l'ordre visuel qui définit « le troisième déroulant ».
+  --
+  -- Les ordonnées sont relevées d'ABORD, dans une liste de nombres. Comparer
+  -- `item 2 of (position of e)` directement construit un descripteur d'objet au lieu de
+  -- lire une valeur, et System Events répond « impossible de convertir en type specifier ».
+  tell application "System Events"
+    set ys to {}
+    repeat with e in elems
+      set pos to (position of e)
+      set end of ys to (item 2 of pos) as integer
+    end repeat
+    set order to {}
+    repeat (count of ys) times
+      set best to 0
+      repeat with i from 1 to (count of ys)
+        if (item i of ys) is not missing value then
+          if best is 0 then
+            set best to i
+          else if (item i of ys) < (item best of ys) then
+            set best to i
+          end if
+        end if
+      end repeat
+      set end of order to best
+      set item best of ys to missing value
+    end repeat
+    return item (item n of order) of elems
+  end tell
+end nthFromTop
+
+on closePrefs()
+  tell application "System Events" to tell process "Live"
+    try
+      repeat with w in windows
+        try
+          click (first button of w whose subrole is "AXCloseButton")
+          return
+        end try
+      end repeat
+    end try
+  end tell
+end closePrefs
+AS
+)"
+RC=$?
+[ -n "$OUT" ] && echo "$OUT"
+case "$OUT" in
+  ERREUR:*)      exit 3 ;;
+  INTROUVABLE:*) exit 2 ;;
+esac
+exit $RC
