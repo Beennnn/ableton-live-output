@@ -67,7 +67,7 @@ on run argv
     set audio to my findAudioPane()
     set opened to false
     if audio is missing value then
-      keystroke "," using command down
+      my openPrefs()
       set opened to true
       -- ATTENDRE QUE ÇA EXISTE, pas attendre un délai. C'est l'ouverture de la fenêtre qui
       -- est lente (jusqu'à 3 s observées), et une temporisation fixe est perdante des deux
@@ -114,7 +114,7 @@ on run argv
     -- un coup sur deux. Symptôme observé le 2026-08-19, et parfaitement reproductible :
     -- un échec en engendrait un autre.
     if my dropdownItems() is not missing value then
-      key code 53
+      my closeDropdown()
       delay 0.4
     end if
 
@@ -126,7 +126,7 @@ on run argv
       if items_ is not missing value then exit repeat
     end repeat
     if items_ is missing value then
-      key code 53
+      my closeDropdown()
       if opened then my closePrefs()
       return "ERREUR: liste des périphériques illisible"
     end if
@@ -136,7 +136,7 @@ on run argv
       repeat with mi in items_
         set end of names to (title of mi)
       end repeat
-      key code 53
+      my closeDropdown()
       if opened then my closePrefs()
       return (names as text)
     end if
@@ -149,7 +149,7 @@ on run argv
       end if
     end repeat
     if hit is missing value then
-      key code 53
+      my closeDropdown()
       if opened then my closePrefs()
       return "INTROUVABLE: aucune sortie ne contient « " & want & " »"
     end if
@@ -242,6 +242,44 @@ on nthFromTop(elems, n)
   end tell
 end nthFromTop
 
+-- Ouvrir les réglages SANS envoyer de frappe. ⌘, marche, mais exige une SECONDE
+-- autorisation macOS — « envoyer des saisies » (erreur 1002) — en plus de la lecture
+-- de l'interface (-25211). Un processus qui n'a que la lecture échouait donc à 100 %
+-- alors que tout le reste du script passait (mesuré le 2026-08-22). Cliquer l'élément
+-- de menu ne demande que la lecture.
+--
+-- On vise la POSITION 3 et non le libellé : le menu de Live est
+-- « À propos de Live | — | Réglages… | — | Services | … », identique dans toutes les
+-- langues à cette position, alors que `menu item "Réglages…"` ne marcherait qu'en
+-- français. Repli sur ⌘, si la structure du menu change : mieux vaut exiger une
+-- permission de plus que ne pas ouvrir du tout.
+on openPrefs()
+  tell application "System Events" to tell process "Live"
+    try
+      click menu item 3 of menu 1 of menu bar item 2 of menu bar 1
+      return
+    end try
+    keystroke "," using command down
+  end tell
+end openPrefs
+
+-- Refermer un menu déroulant ouvert. Échap (key code 53) est une frappe, donc soumis à
+-- la même seconde autorisation que ⌘, ci-dessus ; AXCancel passe par l'accessibilité
+-- seule. Attention : closePrefs() ne peut PAS servir ici — il clique la case de
+-- fermeture de la FENÊTRE, alors qu'on veut seulement replier le menu.
+on closeDropdown()
+  tell application "System Events" to tell process "Live"
+    try
+      set w to first window whose subrole is "AXUnknown"
+      perform action "AXCancel" of (item 1 of UI elements of w)
+      return
+    end try
+    try
+      key code 53
+    end try
+  end tell
+end closeDropdown
+
 on closePrefs()
   tell application "System Events" to tell process "Live"
     try
@@ -264,7 +302,17 @@ case "$OUT" in
   # se donne par appelant, pas une fois pour toutes : un terminal autorisé ne fait rien
   # pour un service lancé par launchd, qui est un autre processus responsable. Le message
   # brut d'AppleScript ne dit rien de tout ça, d'où cette traduction.
-  *-25211*|*"accès d’aide"*|*"assistive access"*)
+  # Trois codes pour UN SEUL refus, vu de trois endroits différents. Ils tombent tous
+  # dans la même branche parce que le geste de réparation est le même : autoriser
+  # l'appelant dans Accessibilité.
+  #   -25211 = lecture de l'interface refusée (« accès d'aide »)
+  #    1002  = envoi de saisies refusé — le même refus vu depuis l'autre bout, constaté
+  #            le 2026-08-22 depuis un shell qui avait la lecture mais pas les frappes
+  #   -1743  = envoi d'événements Apple refusé (Automatisation, pas Accessibilité, mais
+  #            même symptôme et même écran de réglages)
+  *-25211*|*"accès d’aide"*|*"assistive access"*|\
+  *"(1002)"*|*"envoyer des saisies"*|*"envoyer des frappes"*|*"not allowed to send keystrokes"*|\
+  *-1743*|*"événements Apple"*|*"Apple events"*)
     echo "→ autoriser l'appelant dans Réglages Système › Confidentialité et sécurité › Accessibilité." >&2
     exit 4 ;;
   ERREUR:*)      exit 3 ;;
