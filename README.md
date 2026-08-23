@@ -61,6 +61,14 @@ over: a terminal you authorised does nothing for a background service that runs 
 script. When it is missing you get exit code 4 and a line telling you so, rather than an
 AppleScript error number.
 
+**Accessibility alone is enough** — the script never needs *Input Monitoring* or a second
+"send keystrokes" grant. It used to: `⌘,` opened the settings window and `esc` dismissed a
+drop-down, and both are keystrokes, which macOS gates separately from reading the
+interface. A process holding only the read grant therefore failed every time while
+everything else about it worked. Both are now done through the accessibility tree — a
+click on the menu item, and `AXCancel` on the open menu — with the keystroke kept only as
+a fallback.
+
 ## It does not read a single translated string
 
 Window and tab titles follow Live's UI language, so relying on them would break the day
@@ -79,9 +87,19 @@ CoreAudio, and are matched as a substring, case-insensitively (AppleScript's `co
 | 3 | the change did not take |
 | 4 | the caller lacks Accessibility permission |
 
+Code 4 covers the same refusal seen from three angles, because the repair is identical in
+all three: `-25211` (reading the interface denied), `1002` (sending input denied) and
+`-1743` (sending Apple events denied).
+
 Machine-readable on purpose: a caller should never have to parse a sentence.
 
 ## Two traps this already walks around
+
+**One permission where two were being asked for.** See the install note above: opening
+settings and closing a drop-down went through keystrokes, which macOS grants separately
+from reading the interface. The menu item is clicked at **position 3** rather than by its
+label (`About Live | — | Settings… | — | Services | …`), which keeps the rule this
+project holds to: never depend on a translated string.
 
 **Waiting for a delay instead of for the thing.** Opening the settings window takes up to
 three seconds; a fixed pause is wrong both ways — too short and the first call fails, too
